@@ -1,0 +1,6 @@
+"type"	"Gender"	"18-29"	"30-39"	"Total"
+"1"	"CHN"	"female"	85	1	86
+"2"	"CHN"	"male"	60	2	62
+"3"	"ENS"	"female"	25	5	30
+"4"	"ENS"	"male"	30	27	57
+"5"	"Total"	"-"	200	35	235

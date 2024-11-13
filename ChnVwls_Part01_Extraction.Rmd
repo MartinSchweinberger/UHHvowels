@@ -1,0 +1,319 @@
+---
+title: "An acoustic analysis of vowel production by L1-Chinese learners of English"
+author: "Martin Schweinberger"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+---
+
+# Introduction
+
+This R Notebook shows how to access Praat from R and how to extract formant values from wav files and their corresponding Praat TextGrids. The tutorials is based on [Phonetics Tools in R](https://marissabarlaz.github.io/portfolio/phoneticstools/] by Marissa Barlaz).
+
+## Preparation
+
+Prepare session
+
+```{r prep0}
+# set options
+options(stringsAsFactors = F)         # no automatic data transformation
+options("scipen" = 100, "digits" = 4) # suppress math annotation
+```
+
+Install packages
+
+```{r install,eval=F}
+install.packages("here")
+install.packages("tidyverse")
+install.packages("rPraat")
+install.packages("phonTools")
+install.packages("tuneR")
+install.packages("ipa")
+install.packages("wrassp")
+# `PraatR` is not available on CRAN at the time of writing 
+# thus it has to be installed from GitHub (as shown below)
+install.packages("devtools")
+devtools::install_github("usagi5886/PraatR")
+```
+
+
+Load packages
+
+```{r prep1, warning = F, message = F}
+library(here)
+library(tidyverse)
+library(rPraat)
+library(phonTools)
+library(tuneR)
+library(ipa)
+library(wrassp)
+library(PraatR)
+```
+
+
+
+# Formant Extraction
+
+# Function for extraction
+
+> WARNING: convert mp3 to wav!
+
+
+```{r extract, eval = T, message = F, warning = F}
+# apply function
+exformants <- function(paths, formants, gender, tvar){
+  sapply(paths, function(x){
+     # define pattern
+    target <- c("\\b[gkbpdtwhs]{1,}[aeiouyw]{1,}'{0,1}[gkdtbpkhs]{0,3}\\b")
+    # extract formants from file
+    PathWav <- x
+    PathStore = stringr::str_replace_all(PathWav, ".txt", paste0("_F", formants, "_", gender, ".rda"))
+    PathStore = stringr::str_replace_all(PathStore, "/data/[CHNENS]{3,3}_{0,1}[A-Z]{0,2}/", "/tables/")
+    PathTextGrid = stringr::str_replace(PathWav, ".txt", ".TextGrid")
+    PathWav = stringr::str_replace(PathWav, ".txt", ".wav")
+    TextGridInfo = tg.read(PathTextGrid)
+    T1 = data.frame(tmin = TextGridInfo[1][[1]]$t1,
+                    word = TextGridInfo[1][[1]]$label)
+    T3 = data.frame(tmin =TextGridInfo$MAU$t1,
+                    tmax = TextGridInfo$MAU$t2,
+                    label = TextGridInfo$MAU$label) %>% 
+      dplyr::filter(label !="")
+    TextGrid = dplyr::left_join(T3, T1, "tmin") %>%
+      tidyr::fill(word)  %>% 
+      # simplify data frame
+      dplyr::mutate(file = stringr::str_replace_all(PathWav, ".*/(.*?).wav", "\\1")) %>%
+      dplyr::filter(stringr::str_detect(word, target)) %>%
+      dplyr::filter(stringr::str_detect(label, "i|I|e|E|\\{|y|2|9|1|\\@|6|3|a|\\}|8|\\&|M|7|V|A|u|U|o|O|Q")) %>%
+      dplyr::mutate(midpoint = (tmin+tmax)/2) %>%
+      # extract formants
+      dplyr::rowwise() %>%
+      dplyr::mutate(F1 = mean(wrassp::forest(PathWav, toFile = F, beginTime = tmin,
+                                         endTime = tmax, numFormants = formants,
+                                         gender = gender)$fm[,1]),
+                    F2 = mean(wrassp::forest(PathWav, toFile = F,beginTime = tmin, 
+                                         endTime = tmax, numFormants = formants,
+                                         gender = gender)$fm[,2]),
+                    F3 = mean(wrassp::forest(PathWav, toFile = F, beginTime = tmin,
+                                         endTime = tmax, numFormants = formants,
+                                         gender = gender)$fm[,3])) %>%
+      dplyr::mutate(vowel = sampa(label, to = "ipa")) %>%
+      dplyr::mutate(path = paste0(str_replace_all(PathStore, ".rda", "_"), tvar, collapse = ""))
+    PathStore = paste0(str_replace_all(PathStore, ".rda", "_"), tvar, ".rda", collapse = "")
+    # save textgrid
+    base::saveRDS(TextGrid, file = PathStore)
+  })
+}
+```
+
+
+
+
+# Extract CHN vowels
+
+Find files with target words
+
+```{r , eval = T,  message=F, warning=F}
+txtfiles <- list.files(here("data", "CHN_TU"), ".*.txt", full.names = T) 
+txts <- sapply(txtfiles, function(x) {
+  x <- scan(x, what = "char", quiet = T) %>%
+    paste0(collapse = " ") %>%
+  str_squish()
+}) 
+# define pattern
+target <- c("\\b[gkbpdtwhs]{1,}[aeiouyw]{1,}'{0,1}[gkdtbpkhs]{0,3}\\b")
+targets <- txtfiles[stringr::str_detect(txts, target)]
+# corrupt files
+#rmv <- c("SM_CHN_PTJ1_043_B1_2", "SM_CHN_PTJ1_043_B2_0", "SM_CHN_PTJ2_001_B1_1", "SM_CHN_PTJ2_001_B1_2", "SM_CHN_PTJ2_043_B1_2", "SM_CHN_PTJ2_043_B2_0", "SM_CHN_SMK1_001_B1_1", "SM_CHN_SMK1_001_B1_2", "SM_CHN_SMK1_043_B1_2", "SM_CHN_SMK1_043_B2_0", "SM_CHN_SMK2_001_B1_1", "SM_CHN_SMK2_001_B1_2", "SM_CHN_SMK2_043_B1_2", "SM_CHN_SMK2_043_B2_0")
+# exclude corrupt files
+#targetfiles <- targets[!str_detect(targets, rmv)]
+targetfiles <- targets
+```
+
+
+Remove files where TextGrid, wav, mp3, or txt are missing
+
+```{r , eval = F,  message=F, warning=F}
+# WARNING
+rmv2 <- list.files(here("data", "CHN_TU")) %>%
+  stringr::str_remove_all("\\..*")%>%
+  stringr::str_remove_all(".*/")
+# which files do not occur 4 times (mp3, wav, txt, TextGrid)
+rmv3 <- names(table(rmv2))[which(table(rmv2)< 4)]
+# combine into regex
+rmv4 <- paste0(rmv3, sep = "|", collapse = "")
+# remove last "or" symbol
+rmv5 <- str_remove_all(rmv4, "\\|$")
+targetfiles <- targetfiles[!stringr::str_detect(targetfiles, rmv5)]
+# inspect
+head(targetfiles, 10)
+```
+
+test if cleaning has worked
+
+```{r eval = F}
+table(str_detect(test, "SM_CHN_PTJ2_001_B1_2"))
+```
+
+
+## Target US
+
+```{r jmus1, eval = F, message = F, warning=F}
+## CHN Male US
+# gender = male, formants = 3, target variety = genam
+exformants(paths = targetfiles, formants = 3, gender = "m", tvar = "us")
+# gender = male, formants = 4, target variety = genam
+exformants(paths = targetfiles, formants = 4, gender = "m", tvar = "us")
+# gender = male, formants = 5, target variety = genam
+exformants(paths = targetfiles, formants = 5, gender = "m", tvar = "us")
+# gender = male, formants = 6, target variety = genam
+exformants(paths = targetfiles, formants = 6, gender = "m", tvar = "us")
+# gender = male, formants = 7, target variety = genam
+exformants(paths = targetfiles, formants = 7, gender = "m", tvar = "us")
+```
+
+```{r jmus2, eval = F, message = F, warning=F}
+## CHN Female US
+# gender = female, formants = 3, target variety = genam
+exformants(paths = targetfiles, formants = 3, gender = "f", tvar = "us")
+# gender = female, formants = 4, target variety = genam
+exformants(paths = targetfiles, formants = 4, gender = "f", tvar = "us")
+# gender = female, formants = 5, target variety = genam
+exformants(paths = targetfiles, formants = 5, gender = "f", tvar = "us")
+# gender = female, formants = 6, target variety = genam
+exformants(paths = targetfiles, formants = 6, gender = "f", tvar = "us")
+# gender = female, formants = 7, target variety = genam
+exformants(paths = targetfiles, formants = 7, gender = "f", tvar = "us")
+```
+
+
+## Target GB
+
+Find files with target words
+
+```{r , eval = T, message=F, warning=F}
+txtfiles <- list.files(here("data/CHN_TB"), ".*.txt", full.names = T) 
+txts <- sapply(txtfiles, function(x) {
+  x <- scan(x, what = "char", quiet = T) %>%
+    paste0(collapse = " ") %>%
+  str_squish()
+}) 
+# define pattern
+target <- c("\\b[gkbpdtwhs]{1,}[aeiouyw]{1,}'{0,1}[gkdtbpkhs]{0,3}\\b")
+targetfiles <- txtfiles[stringr::str_detect(txts, target)]
+# inspect
+head(targetfiles, 10)
+
+```
+
+Remove files where TextGrid, wav, mp3, or txt are missing
+
+```{r , eval = T,  message=F, warning=F}
+# WARNING
+rmv2 <- list.files(here("data", "CHN_TB")) %>%
+  stringr::str_remove_all("\\..*")%>%
+  stringr::str_remove_all(".*/")
+# which files do not occur 4 times (mp3, wav, txt, TextGrid)
+rmv3 <- names(table(rmv2))[which(table(rmv2)< 4)]
+# combine into regex
+rmv4 <- paste0(rmv3, sep = "|", collapse = "")
+# remove last "or" symbol
+rmv5 <- str_remove_all(rmv4, "\\|$")
+targetfiles <- targetfiles[!stringr::str_detect(targetfiles, rmv5)]
+# inspect
+head(targetfiles, 10)
+```
+
+```{r jmgb, eval = F, message = F, warning=F}
+## CHN Male GB
+# gender = male, formants = 3, target variety = gb
+exformants(paths = targetfiles, formants = 3, gender = "m", tvar = "gb")
+# gender = male, formants = 4, target variety = gb
+exformants(paths = targetfiles, formants = 4, gender = "m", tvar = "gb")
+# gender = male, formants = 5, target variety = gb
+exformants(paths = targetfiles, formants = 5, gender = "m", tvar = "gb")
+# gender = male, formants = 6, target variety = gb
+exformants(paths = targetfiles, formants = 6, gender = "m", tvar = "gb")
+# gender = male, formants = 7, target variety = gb
+exformants(paths = targetfiles, formants = 7, gender = "m", tvar = "gb")
+
+## CHN Female GB
+# gender = female, formants = 3, target variety = gb
+exformants(paths = targetfiles, formants = 3, gender = "f", tvar = "gb")
+# gender = female, formants = 4, target variety = gb
+exformants(paths = targetfiles, formants = 4, gender = "f", tvar = "gb")
+# gender = female, formants = 5, target variety = gb
+exformants(paths = targetfiles, formants = 5, gender = "f", tvar = "gb")
+# gender = female, formants = 6, target variety = gb
+exformants(paths = targetfiles, formants = 6, gender = "f", tvar = "gb")
+# gender = female, formants = 7, target variety = gb
+exformants(paths = targetfiles, formants = 7, gender = "f", tvar = "gb")
+```
+
+# Extract ENS vowles
+
+Find files with target words
+
+```{r , eval = T, message=F, warning=F}
+txtfiles <- list.files(here("data/ENS"), ".*.txt", full.names = T) 
+txts <- sapply(txtfiles, function(x) {
+  x <- scan(x, what = "char", quiet = T) %>%
+    paste0(collapse = " ") %>%
+  str_squish()
+}) 
+# define pattern
+target <- c("\\b[gkbpdtwhs]{1,}[aeiouyw]{1,}'{0,1}[gkdtbpkhs]{0,3}\\b")
+targetfiles <- txtfiles[stringr::str_detect(txts, target)]
+# inspect
+head(targetfiles, 10)
+```
+
+```{r eve, eval = F, message = F, warning=F}
+## ENS Male
+# gender = male, formants = 3
+exformants(paths = targetfiles, formants = 3, gender = "m", tvar = "ve")
+# gender = male, formants = 4
+exformants(paths = targetfiles, formants = 4, gender = "m", tvar = "ve")
+# gender = male, formants = 5
+exformants(paths = targetfiles, formants = 5, gender = "m", tvar = "ve")
+# gender = male, formants = 6
+exformants(paths = targetfiles, formants = 6, gender = "m", tvar = "ve")
+# gender = male, formants = 7
+exformants(paths = targetfiles, formants = 7, gender = "m", tvar = "ve")
+
+## ENS Female
+# gender = male, formants = 3
+exformants(paths = targetfiles, formants = 3, gender = "f", tvar = "ve")
+# gender = male, formants = 4
+exformants(paths = targetfiles, formants = 4, gender = "f", tvar = "ve")
+# gender = male, formants = 5
+exformants(paths = targetfiles, formants = 5, gender = "f", tvar = "ve")
+# gender = male, formants = 6
+exformants(paths = targetfiles, formants = 6, gender = "f", tvar = "ve")
+# gender = male, formants = 7
+exformants(paths = targetfiles, formants = 7, gender = "f", tvar = "ve")
+```
+
+
+# Combine
+
+```{r combine, message=F, warning=F}
+tbpaths <- list.files(here::here("tables"), pattern = "SM.*.rda", full.names = T)
+ltb <- lapply(tbpaths, function(x){
+  base::readRDS(x)
+})
+vdf <- bind_rows(ltb, .id = "id")
+# save
+base::saveRDS(vdf, file = here::here("data", "vdf.rda"))
+# inspect
+nrow(vdf); head(vdf)
+```
+
+
+
+# Citation & Session Info
+
+Schweinberger, Martin. 2024. An acoustic analysis of vowel production by L1-Chinese learners of English.
+
+
+```{r}
+sessionInfo()
+```

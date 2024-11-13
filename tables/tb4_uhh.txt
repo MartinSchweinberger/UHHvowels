@@ -1,0 +1,4 @@
+"type"	"female"	"male"	"Total"
+"1"	"CHN"	86	62	148
+"2"	"ENS"	30	57	87
+"3"	"Total"	116	119	235

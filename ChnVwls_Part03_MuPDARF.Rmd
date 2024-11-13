@@ -1,0 +1,958 @@
+---
+title: "An acoustic analysis of vowel production by L1-Chinese learners of English"
+author: "Martin Schweinberger"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+---
+
+
+# Introduction
+
+
+
+# Preparation
+
+install packages
+
+```{r install, eval=F, message=F, warning=F}
+# install
+install.packages("tidyverse")
+install.packages("here")
+install.packages("adehabitatHR")
+install.packages("lme4")
+install.packages("sjPlot")
+install.packages("report")
+install.packages("flextable")
+install.packages("cowplot")     
+install.packages("randomForest") 
+install.packages("rms") 
+install.packages("caret") 
+install.packages("Hmisc") 
+install.packages("glmulti") 
+install.packages("partykit") 
+install.packages("ggparty")
+install.packages("hunspell")
+install.packages("janitor")
+install.packages("glmmTMB")
+install.packages("quanteda")
+install.packages("viridis")
+install.packages("MuMIn")
+install.packages('TMB', type = 'source')
+```
+
+load packages
+
+```{r load, message=F, warning=F}
+library(tidyverse)
+library(here)
+library(adehabitatHR)
+library(lme4)
+library(sjPlot)
+library(report)
+library(flextable)
+library(cowplot)      
+library(randomForest) 
+library(rms)    
+library(caret) 
+library(Hmisc) 
+library(quanteda)  
+#library(glmulti) 
+library(partykit)   
+library(ggparty)
+library(hunspell)
+library(janitor)
+library(viridis)
+library(TMB)
+library(MuMIn)
+# set options
+options(stringsAsFactors = F)                           
+options(scipen = 999) 
+options(max.print=10000)
+```
+
+
+# Load data
+
+
+```{r data, message=F, warning=F}
+# load .rda data
+cdat  <- base::readRDS(file = here::here("data", "cleandat.rda")) %>%
+  dplyr::filter(vowel != "ʌ") %>%
+  dplyr::ungroup() %>%
+  dplyr::relocate(duration, .after = F2) %>%
+  dplyr::relocate(file, .after = Age)
+# inspect
+str(cdat); head(cdat)
+```
+
+
+
+```{r}
+table(cdat$vowel, cdat$word)
+```
+
+
+
+# Reduce data
+
+```{r redux, message=F, warning=F}
+bdat <- cdat %>%
+  dplyr::mutate(label = stringr::str_remove_all(label, ":"),
+                gender = ifelse(gender == "f", "female", gender),
+                gender = ifelse(gender == "m", "male", gender),
+                tvariety = ifelse(tvariety == "us", "AmE", tvariety),
+                tvariety = ifelse(tvariety == "gb", "BrE", tvariety)) %>%
+  droplevels(.)  %>%
+  dplyr::rename(Vowel = label,
+                Word = word,
+                TargetVariety = tvariety,
+                Gender = gender,
+                Duration = duration,
+                Proficiency = prof,
+                Speaker = speaker) %>%
+  # clean word
+  dplyr::mutate(Word = str_remove_all(Word, "\\W")) %>%
+  dplyr::filter(hunspell_check(Word) == T) %>%
+  # remove "shits"
+  dplyr::filter(Word != "shits",
+                Word != "stat",
+                Word != "whats")
+# inspect
+head(bdat); names(table(bdat$Word))
+```
+
+
+# Check frequency of words
+
+```{r}
+# create a vector of words
+words <- names(table(bdat$Word))
+# load ace files
+afiles <- list.files(here::here("ACE"), pattern = ".TXT", recursive = T, full.names = T) 
+bfiles <- list.files(here::here("BROWN"), pattern = ".TXT", recursive = T, full.names = T) 
+lfiles <- list.files(here::here("LOB"), pattern = ".TXT", recursive = T, full.names = T) 
+cfiles <- c(afiles, bfiles, lfiles)
+```
+
+
+```{r}
+# load the files by scanning the content
+controlc <- sapply(cfiles, function(x){
+  x <- scan(x, what = "char",  sep = "", quote = "",  quiet = T,  skipNul = T)
+  x <- paste0(x, sep = " ", collapse = " ")
+  x <- stringr::str_squish(x)
+})
+controlc <- paste0(controlc, collapse = " ")
+# inspect
+str(controlc)
+```
+
+extract word count of control corpus
+
+```{r}
+cleancontrolc <- controlc %>%
+  stringr::str_replace_all("<.*?>", " ") %>%
+  stringr::str_replace_all("[^[:alpha:] ]", " ") %>%
+  stringr::str_squish() %>%
+  quanteda::tokenize_fastestword() %>%
+  unlist() %>%
+  length()
+# inspect
+cleancontrolc
+```
+
+check how frequent the words are in the control corpus
+
+```{r}
+freqs <- sapply(words, function(x){
+  x <- stringr::str_count(controlc, paste0("\\W", x, "\\W", sep = "", collapse = ""))
+})
+# convert into data frame
+freqsdf <- data.frame(names(freqs), freqs, cleancontrolc) %>%
+  dplyr::rename(Word = 1,
+                all = 3) %>%
+  dplyr::mutate(Frequency = log(freqs/all*1000)) %>%
+  dplyr::select(-freqs, -all)
+# inspect
+head(freqsdf)
+```
+
+
+## Annotate word class
+
+```{r}
+lexical <- c("bad",  "bed", "best", "big", "bit", "book", "books", "boost", "boots", "boss", "bought", "buds", "bus", "butts", "dad", "dead", "death", "debt", "debts", "desk", "dish",  "dust", "gap", "gas",  "good",  "guess", "head", "heads",  "hit", "hot", "key", "kid", "kids", "pass", "past", "pat", "path", "pub", "pubs", "push", "sad", "said", "sat", "says", "seat", "seats", "see", "seep", "sees", "set", "sets",  "shits", "shoes", "shop", "shops", "shut", "sit", "skip",  "speak", "spots", "stat", "step", "steps", "stop", "stops", "stud", "suit", "task", "tasks", "tea", "teeth", "test", "tests", "took", "top", "tough", "two", "wash", "ways",  "weak", "weed", "week",  "wish",  "wood")
+bdat <- bdat %>%
+  dplyr::mutate(WordClass = ifelse(Word %in% lexical, "lexical", "grammatical"),
+                Word = as.vector(Word))
+bdat <- left_join(bdat, freqsdf, by = "Word") %>%
+  dplyr::mutate(vowel = stringr::str_remove_all(vowel, "ː")) 
+# inspect
+table(bdat$WordClass); head(bdat)
+```
+
+
+## Check durations
+
+```{r}
+bdat %>%
+  ggplot(aes(x = vowel, y = Duration)) +
+  geom_boxplot() 
+```
+
+Remove items with exaggerated duration
+
+```{r}
+nrow(bdat)
+bdat <- bdat  %>%
+  # remove rare words
+  dplyr::group_by(type, Word) %>%
+  dplyr::mutate(freq = n()) %>%
+  dplyr::ungroup()
+# harmonize words
+nnwords <- bdat %>%
+  dplyr::filter(type == "CHN") %>%
+  dplyr::group_by(Word) %>%
+  dplyr::summarise(Freq = n()) %>%
+  dplyr::pull(Word)
+
+# remove rare vowels
+bdat <- bdat %>%
+  dplyr::group_by(vowel) %>%
+  dplyr::mutate(fr = n()) %>%
+  dplyr::filter(fr > 100) %>%
+  dplyr::select(-fr) %>%
+  dplyr::ungroup()
+# inspect
+str(bdat); nrow(bdat)
+```
+
+```{r}
+bdat %>%
+  ggplot(aes(x = vowel, y = Duration)) +
+  geom_boxplot()
+```
+
+
+```{r}
+
+tb2 <- bdat %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Age = dplyr::case_when(Age < 30 ~ "18-29",
+                                       Age < 40 ~ "30-39",
+                                       Age < 50 ~ "40-49",
+                                       Age > 49 ~ "50+",
+                                       TRUE ~ "unknown")) %>%
+  dplyr::group_by(type, Gender, Age) %>%
+  dplyr::summarise(speakers = length(table(Speaker))) %>%
+  tidyr::spread(Age, speakers) %>%
+  dplyr::ungroup()  %>%
+  adorn_totals("row")%>%
+  adorn_totals("col")
+# save
+write.table(tb2, here::here("tables", "tb2_uhh.txt"), sep = "\t")
+# inspect
+tb2
+```
+
+```{r}
+bdat <- bdat %>%
+  dplyr::mutate(F1 = as.vector(scale(F1)),
+                F2 = as.vector(scale(F2)),
+                Duration = as.vector(scale(Duration)),
+                Age = as.vector(scale(Age)))
+```
+
+
+
+# Split data
+
+```{r clean}
+nsd <- bdat %>%
+  dplyr::filter(type == "ENS") %>%
+  dplyr::select(-type, -Proficiency, -Speaker, -file)  %>%
+  dplyr::mutate(Word = ifelse(Word %in% nnwords, Word, "other"))%>%
+  dplyr::mutate_if(is.character, factor)
+# inspect
+head(nsd); str(nsd)
+```
+
+
+
+
+Remove impossible variables (too many levels)
+ 
+```{r removeimp}
+nrow(nsd)
+nsd <- nsd %>%
+  dplyr::select(-fspeaker)
+str(nsd); nrow(nsd)
+```
+
+
+## Split native speaker data into test and training set
+
+```{r}
+# add id to data
+nsd <- nsd %>% dplyr::mutate(id = 1:nrow(.))
+# create training set (70%)
+nsdtrain <- nsd %>% dplyr::sample_frac(0.70)
+# create test set (30%)
+nsdtest  <- dplyr::anti_join(nsd, nsdtrain, by = 'id') %>%
+  dplyr::select(-id)
+# remove id column
+nsdtrain <- nsdtrain %>% dplyr::select(-id)
+# inspect
+head(nsdtrain); head(nsdtest)
+```
+
+```{r l2amp_03_43,  message=FALSE, warning=FALSE}
+nnsd <- bdat %>%
+  dplyr::filter(type != "ENS") %>%
+  droplevels() %>%
+  dplyr::select(-file, -type, -fspeaker)
+# save predictors associated with proficiency for later
+pred_nns <- nnsd %>% dplyr::select(Speaker, Proficiency)
+# remove proficiency variables (for now)
+nnsd <- nnsd %>%
+  dplyr::select(-Proficiency, -Speaker)
+# inspect data
+head(nnsd); str(nnsd)
+```
+
+# Harmonize words
+
+```{r}
+nswords <- nsdtrain %>%
+  dplyr::group_by(Word) %>%
+  dplyr::summarise(Freq = n()) %>%
+  dplyr::pull(Word)
+nnsd <- nnsd %>%
+  dplyr::mutate(Word = ifelse(Word %in% nswords, Word, "other")) %>%
+  dplyr::mutate_if(is.character, factor)
+# inspect
+str(nnsd); str(nsdtrain); nswords
+```
+
+
+Remove superfluous predictors
+
+```{r}
+# nnsd
+nnsd <- nnsd %>%
+  dplyr::select(-id, -Vowel, -TargetVariety, -edist, -barkF1, -barkF2, -lobF1, 
+                -lobF2, -normF1, -normF2, -cF1, -cF2, -ED, -WordType, -freq) %>%
+  dplyr::rename(Vowel = vowel)
+# nsdtrain
+nsdtrain <- nsdtrain %>%
+  dplyr::select(-Vowel, -TargetVariety, -edist, -barkF1, -barkF2, -lobF1, 
+                -lobF2, -normF1, -normF2, -cF1, -cF2, -ED, -WordType, -freq) %>%
+  dplyr::rename(Vowel = vowel)
+# nsdtest
+nsdtest <- nsdtest %>%
+  dplyr::select(-Vowel, -TargetVariety, -edist, -barkF1, -barkF2, -lobF1, 
+                -lobF2, -normF1, -normF2, -cF1, -cF2, -ED, -WordType, -freq) %>%
+  dplyr::rename(Vowel = vowel)
+# inspect
+colnames(nnsd); colnames(nsdtrain); colnames(nsdtest)
+```
+
+
+# MuPDARF
+
+Prepare data
+
+```{r}
+wrds1 <- names(table(nsdtest$Word))[table(nsdtest$Word) > 0]
+wrds2 <- names(table(nsdtrain$Word))[table(nsdtrain$Word) > 0]
+wrds3 <- names(table(nnsd$Word))[table(nnsd$Word) > 0]
+wrds <- Reduce(intersect, list(wrds1, wrds2, wrds3))
+# apply to data sets
+nsdtest <- nsdtest %>%
+  dplyr::mutate(Word = ifelse(Word %in% wrds, as.character(Word), "other"))
+nsdtrain <- nsdtrain %>%
+  dplyr::mutate(Word = ifelse(Word %in% wrds, as.character(Word), "other"))
+nnsd <- nnsd %>%
+  dplyr::mutate(Word = ifelse(Word %in% wrds, as.character(Word), "other"))
+# inspect
+wrds
+```
+
+
+## RF NS
+
+Now, we perform a random forest analysis of the native speaker data.
+
+
+Now, we perform a random forest analysis of the native speaker data.
+
+```{r l2amp_03_13, message=FALSE, warning=FALSE}
+# set seed
+set.seed(sum(utf8ToInt("RFNS")))
+nsrf <- randomForest::randomForest(Vowel ~ ., data=nsdtrain, ntree=1000, proximity=TRUE, importance=TRUE)
+# inspect rf results
+nsrf 
+```
+
+
+
+visualise misclassification
+
+```{r}
+nmc <- nsrf$confusion[, -7] %>%
+  as.data.frame() %>%
+  dplyr::mutate(Vowel = rownames(.)) %>%
+  tidyr::gather(NativeChoice, freq, æ:ʊ) %>%
+  dplyr::mutate_if(is.character, factor) %>%
+  dplyr::mutate(freq = ifelse(freq == 0, NA, freq))
+
+ggplot(nmc, aes(x=Vowel, y=NativeChoice, color=freq, size=freq, label=freq)) +
+  #geom_tile()+
+  geom_point() + 
+  geom_text(size = 3, hjust=1.5, color = "gray20")+
+  scale_color_gradient(high="darkblue", low="gray90") +
+  labs(x = "Observed vowel (ENS)", y = "Predicted vowel\n(based on ENS trained model)", title = "(Mis-)Classification of vowels among ENS") +
+  theme_bw()+
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+# save
+ggsave(here::here("images", "misclass_ns.png"), width = 5, height = 4)
+```
+
+Next, we plot the results.
+
+```{r l2amp_03_15,  message=FALSE, warning=FALSE}
+plot(nsrf)
+```
+
+Now, we plot the out-of-bag error frequencies.
+
+```{r l2amp_03_21,  message=FALSE, warning=FALSE}
+# plot new precision/error rate
+oob.error.data <- data.frame(
+  Trees = rep(1:nrow(nsrf$err.rate), times=ncol(nsrf$err.rate)),
+  Type = rep(dimnames(nsrf$err.rate)[[2]], each=nrow(nsrf$err.rate)),
+  Error = as.vector(unlist(nsrf$err.rate)))
+# visualise
+ggplot(data=oob.error.data, aes(x=Trees, y=Error)) +
+  geom_line(aes(color=Type, linetype = Type)) +
+  theme_bw()
+```
+
+
+
+
+```{r}
+oob.error.data %>%
+  dplyr::filter(Type != "OOB") %>%
+  ggplot(aes(x=reorder(Type, -Error, mean), y= Error,  group = Type)) +    
+  geom_boxplot(fill = "lightgray") +
+  coord_cartesian(ylim = c(0, 1)) +              
+  theme_bw(base_size = 10) +         
+  theme(axis.text.x = element_text(size=10),  
+        axis.text.y = element_text(size=10, face="plain")) + 
+  labs(x = "", y = "Error rate (%)") + 
+  scale_y_continuous(limits = c(0, 1),
+                     labels = seq(0, 100, 20),
+                     breaks = seq(0, 1, .2)) +
+  scale_color_manual(guide = FALSE)
+# save
+ggsave(here::here("images", "rf_ns.png"))
+```
+
+
+
+Now, we check the error rates and accuracy and also check how much the model performs better than a base-line model.
+
+```{r l2amp_03_23,  message=FALSE, warning=FALSE}
+# determine accuracy by prediction
+# prediction
+pnsrf <- predict(nsrf, nsdtest)
+# create confusion matrix
+confusionMatrix(pnsrf, nsdtest$Vowel)
+```
+
+
+
+```{r}
+cmnsd <- confusionMatrix(pnsrf, nsdtest$Vowel)
+# calculate increase in prediction accuracy compared to base-line model
+cmnsd$overall[1]
+cmnsd$overall[5]
+
+cmnsd$overall[1]/cmnsd$overall[5]
+```
+
+Now, we inspect which variables are important for the predictions.
+
+
+```{r}
+impdat <- data.frame(
+  Measure = c(rep("Accuracy", length(nsrf$importance[,"MeanDecreaseAccuracy"])),
+              rep("Gini", length(nsrf$importance[,"MeanDecreaseGini"]))),
+  Label = rep(dimnames(nsrf$importance)[[1]], 2),
+  Value = c(nsrf$importance[,"MeanDecreaseAccuracy"], nsrf$importance[,"MeanDecreaseGini"]))
+# ordering
+impdat <- impdat %>%
+  dplyr::group_by(Measure) %>%
+  dplyr::mutate(NormMeasure = scale(Value))
+# inspect
+impdat
+```
+
+```{r}
+impdat %>%
+  ggplot(aes(x = reorder(Label, NormMeasure), y = Value)) +
+  geom_point() +
+  facet_grid(~Measure, scales="free") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "", y = "", title = "Importance of Predictors in Random Forest\n (measured as mean decrease if perdictor is absent)")
+ggsave(here::here("images", "VarImpRFnsd.png"), width = 6, height = 4)
+```
+
+
+
+
+```{r}
+errors_nsd <- nsdtest %>%
+  dplyr::mutate(Prediction = predict(nsrf, nsdtest),
+                Error = ifelse(Vowel == Prediction, 0, 1)) %>%
+  dplyr::group_by(Vowel) %>%
+  dplyr::summarise(all = n(),
+                   errors = sum(Error),
+                   Percent = round(errors/all*100, 1)) %>%
+  dplyr::ungroup() %>%
+    dplyr::mutate(Vowel = as.character(Vowel),
+                  Type = "ENS") %>%
+  dplyr::select(-all, -errors)
+# inspect
+head(errors_nsd)
+```
+
+
+
+## RF NNS
+
+Now, we use the random forest analysis of the native speakers to predict what vowel a native speaker would have produced in the  non-native speaker contexts In a first step, we extract only non-native speaker data.
+
+Next, we use the random forest analysis of the native speakers to predict what vowel a native speaker would have used.
+
+```{r l2amp_03_45,  message=FALSE, warning=FALSE}
+# extract prediction for training data
+pnns <- predict(nsrf, nnsd) 
+# inspect predictions
+head(pnns); head(nnsd$Vowel)  
+```
+
+Now, we create a confusion matrix to check the accuracy of the prediction
+
+```{r l2amp_03_49,  message=FALSE, warning=FALSE}
+confusionMatrix(pnns, nnsd$Vowel)
+```
+
+
+```{r}
+cmnsd <- confusionMatrix(pnns, nnsd$Vowel)
+# calculate increase in prediction accuracy compared to base-line model
+cmnsd$overall[1]
+cmnsd$overall[5]
+
+cmnsd$overall[1]/cmnsd$overall[5]
+```
+
+
+The prediction accuracy increases by `r round(cmnsd$overall[1]/cmnsd$overall[5]*100, 1)` percent if use use our model compared to a no information model.
+
+
+Next, we add the difference between predictions and observed amplification to the data.
+
+```{r l2amp_03_57,  message=FALSE, warning=FALSE}
+# add native choice prediction to data
+nnsd <- nnsd %>%
+  dplyr::mutate(NativeChoice = as.vector(pnns),
+                NativeChoice = as.factor(NativeChoice)) %>%
+  # code if choice of nns is nativelike or not
+  dplyr::mutate(Vowel = as.character(Vowel),
+                NativeChoice = as.character(NativeChoice),
+                NonNativeLike = ifelse(Vowel == NativeChoice, 0, 1))
+
+# inspect new data
+head(nnsd)
+```
+
+
+## Inspect words where the vowels are wrong
+
+```{r}
+errors_words <- nnsd %>%
+  dplyr::filter(NonNativeLike == 1) %>%
+  dplyr::select(Word, Vowel, NativeChoice) %>%
+  dplyr::group_by(Word, Vowel, NativeChoice) %>%
+  dplyr::summarise(freq = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(-freq)
+# inspect
+errors_words
+```
+
+```{r}
+table(errors_words$Word, errors_words$NativeChoice)
+```
+
+
+visualise misclassification
+
+```{r}
+pmc <- nnsd %>%
+  dplyr::select(Vowel, NativeChoice) %>%
+  dplyr::mutate_if(is.character, factor) %>%
+  dplyr::group_by(Vowel, NativeChoice) %>%
+  dplyr::summarise(freq = n())
+
+ggplot(pmc, aes(x=Vowel, y=NativeChoice, color=freq, size=freq, label=freq)) +
+  #geom_tile()+
+  geom_point() + 
+  geom_text(size = 3, hjust=1.5, color = "gray20")+
+  scale_color_gradient(high="darkblue", low="gray90") +
+  labs(x = "Observed vowel (CHN)", y = "Predicted vowel\n(based on ENS trained model)", title = "(Mis-)Classification of vowels among CHN") +
+  theme_bw()+
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+# save
+ggsave(here::here("images", "misclass_nns.png"), width = 5, height = 4)
+```
+
+
+
+
+```{r}
+errors_nnsd <- nnsd %>%
+  dplyr::group_by(Vowel, NonNativeLike) %>%
+  dplyr::summarise(freq = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(Vowel) %>%
+  dplyr::summarise(all = sum(freq),
+                   Percent = round(freq/all*100, 1),
+                   NonNativeLike = NonNativeLike) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(NonNativeLike == 1) %>%
+  dplyr::select(-all, -NonNativeLike) %>%
+  dplyr::mutate(Type = "CHN")
+# inspect
+head(errors_nnsd); errors_nsd
+```
+
+```{r}
+dplyr::full_join(errors_nnsd, errors_nsd) %>%
+  dplyr::mutate_if(is.character, factor) %>%
+  dplyr::group_by(Vowel) %>%
+  dplyr::arrange(Vowel) %>%
+  dplyr::mutate(odr = ifelse(Type == "ENS", Percent, NA)) %>%
+  tidyr::fill(odr, .direction = "updown") %>%
+  dplyr::arrange(-odr) %>%
+  dplyr::ungroup() %>%
+  ggplot(aes(x = reorder(Vowel, -odr), y = Percent, label = Percent, fill = Type, group = Type)) +
+  geom_bar(stat="identity", position = position_dodge()) +
+  geom_text(aes(y = Percent+3), position = position_dodge(0.9), size = 2.5, color = "grey10") +
+  theme_bw() +
+  labs(x = "", y = "Error rate (%)") +
+  scale_fill_manual(values = c("gray50", "gray80"),
+                    labels = c("L1 English speakers (ENS, test data)", "Chinese learners (CHN)")) +
+  theme(legend.position = "top",
+        legend.title = element_text("")) +
+  coord_cartesian(ylim = c(0, 100))
+# save
+ggsave(here::here("images", "vowelerrors_nns.png"), width = 5, height = 4)
+```
+
+
+
+# GLMM
+
+
+Now, we perform a regression analysis on then difference between native speakers and non-native speakers. We begin by creating fixed-effects intercept-only base-line models.
+
+prepare data
+
+```{r}
+# add proficiency variables
+rdat <- cbind(nnsd, pred_nns) %>%
+  dplyr::mutate(Proficiency = factor(Proficiency),
+                NonNativeLike = factor(NonNativeLike)) %>%
+  dplyr::group_by(Word) %>%
+  dplyr::mutate(freq = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Word = ifelse(freq > 12, as.character(Word), "other"),
+                F1 = round(F1, 0),
+                F2 = round(F2, 0),
+                Duration = round(Duration, 3)) %>%
+  dplyr::mutate_if(is.character, factor) %>%
+  dplyr::select(-freq, -NativeChoice)
+# inspect
+head(rdat); str(rdat)
+```
+
+
+
+
+
+
+## Modeling
+
+```{r l2amp_03_59,  message=FALSE, warning=FALSE}
+# set options
+options(contrasts = c("contr.treatment", "contr.poly"))
+nnsd.dist <- datadist(rdat)
+options(datadist = "nnsd.dist")
+# generate initial minimal regression model 
+# baseline model glm
+m0 = glmer(NonNativeLike ~ (1 | Word) + (1 | Speaker), family = binomial, data = rdat) 
+# inspect results
+summary(m0)
+# inspect 
+sjPlot::tab_model(m0)
+```
+
+
+```{r}
+r.squaredGLMM(m0)
+```
+
+
+Model fitting
+
+```{r}
+# wrapper function for linear mixed-models
+glmer.glmulti <- function(formula, data, random="",...){
+  glmer(paste(deparse(formula),random), family = binomial,  data=data, control = glmerControl(optimizer="bobyqa"), ...)
+}
+# define formular
+form_glmulti = as.formula(paste("NonNativeLike ~  Vowel + Duration +  Gender + Proficiency + WordClass + Frequency"))
+```
+
+Extract best 5 models.
+
+```{r eval = F, message=F, warning=F}
+library(glmulti)
+# multi selection for glmer
+mfit <- glmulti(form_glmulti, random="+(1|Word)+(1|Speaker)", 
+                data = rdat, method = "h", fitfunc = glmer.glmulti,  includeobjects = T,
+                crit = "aic", intercept = TRUE, marginality = FALSE, level = 2)
+```
+
+After 2000 models:
+Best model: NonNativeLike~1+Vowel+Frequency+Vowel:Frequency+WordClass:Frequency
+Crit= 1083.85798375276
+Mean crit= 1085.21585106472
+
+```{r message=F, warning=F}
+# set seed
+set.seed(sum(utf8ToInt("GLMER")))
+# generate final model (include main effects)
+mf <- glmer(NonNativeLike ~ (1 | Word)  + (1 | Speaker) +
+              Vowel+Frequency+Vowel:Frequency+WordClass:Frequency,
+            family = binomial, data = rdat)
+# inspect 
+sjPlot::tab_model(mf)
+```
+
+```{r}
+r.squaredGLMM(mf)
+```
+
+check for multicollinearity
+
+```{r}
+car::vif(mf)
+```
+
+
+check effects
+
+```{r message=F, warning=F}
+p <- plot_model(mf, type = "re", sort.est = TRUE, grid = FALSE)
+p[[1]] + 
+  theme_bw() +
+  theme(axis.text.y = element_text(size=4))
+ggsave2(here::here("images", "re_spk.png"), width = 4, height = 12)
+```
+
+```{r}
+p[[2]] + 
+  theme_bw()
+ggsave2(here::here("images", "re_wrds.png"), width = 6, height = 5)
+```
+
+
+
+
+```{r, message=F, warning=F}
+sjPlot::plot_model(mf, type = "pred", 
+                   terms = c("WordClass", "Vowel"),
+                   se = FALSE,
+                   ci.lvl = FALSE,
+                   colors = viridis(6)) +
+  theme_bw() +
+  labs(title = "", y = "Predicted percent non-target-like production",
+       x = "Word class")
+ggsave2(here::here("images", "vowel_wc.png"), width = 5, height = 4)
+```
+
+```{r, message=F, warning=F}
+sjPlot::plot_model(mf, 
+                   type = "pred", 
+                   terms = c("Frequency","Vowel"), 
+                   se = FALSE,
+                   ci.lvl = FALSE,
+                   colors = viridis(6)) +
+  ggplot2::annotate(geom = "text", label = "/æ/", x = 3.5, y = .93, color = viridis(6)[1], size = 4.5) +
+  ggplot2::annotate(geom = "text", label = "/ɪ/", x = 3.5, y = .98, color = viridis(6)[4], size = 4.5) +
+  ggplot2::annotate(geom = "text", label = "/u/", x = -9.5, y = 1, color = viridis(6)[5], size = 4.5) +
+  ggplot2::annotate(geom = "text", label = "/ʊ/", x = -9.5, y = .18, color = viridis(6)[6], size = 4.5) +
+  theme_bw()  +
+  labs(title = "", y = "Predicted percent non-target-like production",
+       x = "Frequency (logged, centered, scaled)") 
+ggsave2(here::here("images", "frequency.png"), width = 5, height = 4)
+```
+
+
+
+```{r}
+p <- sjPlot::plot_model(mf, 
+                   type = "pred", 
+                   terms = c("Vowel"), 
+                   se = FALSE,
+                   ci.lvl = FALSE)
+mf_dat <- p$data$predicted %>%
+  as.data.frame() %>%
+  dplyr::mutate(Vowel = names(table(rdat$Vowel))) %>%
+  dplyr::rename(Prediction = 1) %>%
+  dplyr::mutate(Prediction = Prediction*100)
+mf_dat
+```
+
+```{r}
+mf_dat %>%
+  ggplot(aes(x = reorder(Vowel, -Prediction, mean), y = Prediction, shape = Vowel, color = Vowel, label = round(Prediction, 3))) +
+  geom_point(size = 5) +
+  geom_text(size = 3, hjust=-0.5) +
+  scale_shape_manual(values = names(table(mf_dat $Vowel))) +
+  scale_color_manual(values = viridis(6)) +
+  labs(y ="Predicted percent non-target-like production",
+       x = "") +
+  theme_bw() +
+  theme(legend.position = "none")
+ggsave2(here::here("images", "vowel_vwl.png"), width = 5, height = 4)
+```
+
+
+
+# Tabulation
+
+```{r}
+# save tables
+str(rdat)
+str(nsdtrain)
+str(nsdtest)
+```
+
+
+# Overview of the data
+
+```{r}
+tb1 <- bdat %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(type) %>%
+  dplyr::mutate(speakers = length(table(Speaker))) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(type, vowel) %>%
+  dplyr::summarise(speakers = speakers,
+                   obs = n()) %>%
+  unique() %>%
+  tidyr::spread(vowel, obs) %>%
+  dplyr::ungroup()  %>%
+  adorn_totals("row")%>%
+  adorn_totals("col") %>%
+  dplyr::mutate(Total = Total-speakers)
+# save
+write.table(tb1, here::here("tables", "tb1_uhh.txt"), sep = "\t")
+# inspect
+tb1
+```
+
+
+
+tabulate proficiency
+
+
+```{r}
+tb3 <- bdat %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(type == "CHN")%>%
+  dplyr::group_by(Proficiency, Gender) %>%
+  dplyr::summarise(speakers = length(table(Speaker))) %>%
+  tidyr::spread(Proficiency, speakers) %>%
+  dplyr::ungroup()  %>%
+  adorn_totals("row")%>%
+  adorn_totals("col")
+# save
+write.table(tb3, here::here("tables", "tb3_uhh.txt"), sep = "\t")
+# inspect
+tb3
+```
+
+tabulate gender and type
+
+
+```{r}
+tb4 <- bdat %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(Gender, type) %>%
+  dplyr::summarise(speakers = length(table(Speaker))) %>%
+  tidyr::spread(Gender, speakers) %>%
+  dplyr::ungroup()  %>%
+  adorn_totals("row")%>%
+  adorn_totals("col")
+# save
+write.table(tb4, here::here("tables", "tb4_uhh.txt"), sep = "\t")
+# inspect
+tb4
+```
+
+
+```{r}
+summary(bdat)
+```
+
+```{r}
+summary(nnsd)
+```
+
+```{r}
+summary(rdat)
+```
+
+
+
+
+# Outro
+
+```{r}
+# save tables
+base::saveRDS(rdat, file = here::here("tables", "rdat.rda"))
+base::saveRDS(nsdtrain, file = here::here("tables", "nsdtrain.rda"))
+base::saveRDS(nsdtest, file = here::here("tables", "nsdtest.rda"))
+```
+
+
+# Citation & Session Info
+
+Schweinberger, Martin. 2023. Pushing the boundaries - analysing English vowel production among Chinese learners of English - Part 3: Statistical Analysis. 
+
+
+```{r}
+sessionInfo()
+```

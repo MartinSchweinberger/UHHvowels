@@ -1,0 +1,621 @@
+---
+title: "An acoustic analysis of vowel production by L1-Chinese learners of English"
+author: "Martin Schweinberger"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+---
+
+# Introduction
+
+This R Notebook shows the statistical anaylsis of vowel production features of monophthongs produced by  Chinese Learners and Native Speakers of English.
+
+## Preparation
+
+install packages
+
+```{r install, eval=F, message=F, warning=F}
+# install
+install.packages("tidyverse")
+install.packages("here")
+install.packages("viridis")
+install.packages("phonR")
+install.packages("vowels")
+install.packages("ggridges")
+install.packages("sm")
+install.packages("glmmTMB")
+```
+
+load packages
+
+```{r load, message=F, warning=F}
+library(tidyverse)
+library(here)
+library(viridis)
+library(phonR)
+library(vowels)
+library(ggridges)
+library(sm)
+options("scipen" = 100, "digits" = 12) # suppress math annotation
+```
+
+
+load data
+
+
+```{r data, message=F, warning=F}
+# load .rda data
+vdf  <- base::readRDS(file = here::here("data", "vdf.rda")) %>%
+  dplyr::mutate(type = stringr::str_replace_all(file, "^[A-Z]{2,}_([A-Z]{3,3})_.*", "\\1"),
+                speaker = stringr::str_replace_all(file, ".*_([0-9]{3,3})_.*", "\\1")) %>%
+  dplyr::mutate(tgender = stringr::str_replace_all(path, ".*F[3-7]{1,1}_([fm]{1,1})_[a-z]{2,2}$", "\\1"),
+                tformants = stringr::str_replace_all(path, ".*(F[3-7]{1,1})_[fm]{1,1}_[a-z]{2,2}$", "\\1"),
+                tvariety = stringr::str_remove_all(path, ".*_"))
+# inspect
+nrow(vdf); head(vdf)
+```
+
+
+# Load Biodata
+
+```{r bio, message=F, warning=F}
+bio <- read.delim(here::here("data", "biodata_icnale.txt"), header = T, sep = "\t") %>%
+  dplyr::filter(stringr::str_detect(Code, "CHN|ENS")) %>%
+  dplyr::mutate(type = stringr::str_replace_all(Code, "^[A-Z]{2,}_([A-Z]{3,3})_.*", "\\1"),
+                speaker = stringr::str_replace_all(Code, ".*_([0-9]{3,3}).*", "\\1"),
+                Sex = tolower(Sex)) %>%
+  dplyr::rename(gender = Sex)
+bio[bio=="N/A"]<-NA
+# inspect
+head(bio)
+```
+
+
+# Join data sets
+
+Join formant and biodata
+
+```{r combine, message=F, warning=F}
+fdat <- dplyr::left_join(vdf, bio, by = c("type", "speaker"))  %>%
+  # filter out di- and triphthongs
+  dplyr::mutate(nv = nchar(stringr::str_remove_all(label, ":"))) %>%
+  dplyr::filter(nv == 1) %>%
+  dplyr::filter(gender == tgender) %>%
+  # remove  ref speakers with l1-var other than genam or gb
+  dplyr::mutate(tvariety = dplyr::case_when(Country == "ENS_GBR" ~ "gb",
+                                            Country == "ENS_CAN" ~ "us",
+                                            Country == "ENS_USA" ~ "us",
+                                             TRUE ~ tvariety)) %>%
+  dplyr::filter(type == "CHN" | type == "ENS" & Country == "ENS_CAN" | Country == "ENS_GBR" | Country == "ENS_USA") %>%
+  dplyr::filter(Age < 40) %>%
+  # clean vowels (remove :)
+  dplyr::mutate(vowel = stringr::str_remove_all(vowel, "ː")) %>%
+  # add full gender
+  dplyr::mutate(gender = dplyr::case_when(gender == "m" ~ "male",
+                                          gender == "f" ~ "female",
+                                          T ~ gender))
+# inspect
+head(fdat)
+```
+
+
+overview
+
+```{r}
+library(janitor)
+tb0 <- fdat %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(type) %>%
+  dplyr::mutate(speakers = length(table(speaker))) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(type, vowel) %>%
+  dplyr::summarise(speakers = speakers,
+                   obs = n()) %>%
+  unique() %>%
+  tidyr::spread(vowel, obs) %>%
+  dplyr::ungroup()  %>%
+  adorn_totals("row")%>%
+  adorn_totals("col") %>%
+  dplyr::mutate(Total = Total-speakers)
+# save
+write.table(tb0, here::here("tables", "tb0.txt"), sep = "\t")
+# inspect
+tb0
+```
+
+
+
+testing
+
+```{r}
+table(fdat$vowel, fdat$tvariety, fdat$type)
+```
+
+
+Remove rare vowels
+
+```{r}
+# check
+nrow(fdat)
+# remove
+fdat <- fdat %>%
+  dplyr::filter(vowel != "ɜ",
+                vowel != "ɑ",
+                vowel != "ɔ")
+# check
+nrow(fdat)
+```
+
+
+
+testing
+
+```{r}
+table(fdat$vowel, fdat$tvariety, fdat$type)
+```
+
+
+check proficiency
+
+
+
+
+```{r}
+fdat <- fdat %>%
+  dplyr::mutate(prof = stringr::str_replace_all(file, ".*_([A-B]{1,1}[0-9]{1,1})_.*", "\\1")) %>%
+  mutate(prof = ifelse(prof == file, NA, prof),
+         prof = factor(prof, levels = c("A2", "B1", "B2")))
+# inspect
+summary(fdat$prof)
+```
+
+check lables
+
+```{r}
+fdat %>%
+  filter(word == "word") %>%
+  group_by(label, vowel) %>%
+  summarise(freq = n())
+```
+
+
+# Reference data
+
+**GenAm**
+
+[Yang, Byunggon. 1996. A comparative study of American English and Korean vowels produced by male and female speakers. *Journal of Phonetics* 24: 245–261.](http://fonetiks.info/bgyang/db/96jp.pdf)
+
+```{r refame, message=F, warning=F}
+ame <- read.delim(here::here("data/reference", "GenAm.txt"), sep = "\t", header = T) %>%
+  dplyr::mutate(label = dplyr::case_when(item == "had" ~ "{",
+                                         item == "heed" ~ "i:",
+                                         item == "hid" ~ "I",
+                                         item == "head" ~ "E",
+                                         item == "hard" ~ "6",
+                                         item == "whod" ~ "u:",
+                                         item == "hood" ~ "U",
+                                         item == "hoard" ~ "O:",
+                                         item == "hud" ~ "V",
+                                         item == "hod" ~ "Q",
+                                         TRUE ~ "other"),
+                vowel = dplyr::case_when(item == "had" ~ "æ",
+                                         item == "heed" ~ "i",
+                                         item == "hid" ~ "ɪ",
+                                         item == "head" ~ "ɛ",
+                                         item == "hard" ~ "ɑ",
+                                         item == "whod" ~ "u",
+                                         item == "hood" ~ "ʊ",
+                                         item == "hoard" ~ "ɔ",
+                                         item == "hud" ~ "ʌ",
+                                         item == "hod" ~ "ɑ",
+                                         TRUE ~ "other"),
+                gender = sex) %>%
+  dplyr::filter(label != "other",
+                vowel != "other") %>%
+  dplyr::group_by(label, vowel, gender) %>%
+  dplyr::summarise(target_f1 = mean(F1_Hz),
+                   target_f2 = mean(F2_Hz),
+                   target_f3 = mean(F3_Hz)) %>%
+  dplyr::mutate(tvariety = "us")
+# inspect data
+head(ame)
+```
+
+**SSB**
+
+[Deterding, David 2009. The Formants of Monophthong Vowels in Standard Southern British English Pronunciation. *Journal of the International Phonetic Association* 27, 1-2: 47-55. doi:10.1017/S0025100300005417](http://journals.cambridge.org/download.php?file=%2F7775_45AD5CD7849D3B7634A613DE6E61C294_journals__IPA_IPA27_1-2_S0025100300005417a.pdf&cover=Y&code=0639c34593b21cb18a9e7b504bdd5319)
+
+
+
+
+```{r refbre, message=F, warning=F}
+bre <- read.delim(here::here("data/reference", "SSB.txt"), sep = "\t", header = T) %>%
+  dplyr::mutate(label = dplyr::case_when(item == "had" ~ "{",
+                                         item == "heed" ~ "i:",
+                                         item == "hid" ~ "I",
+                                         item == "head" ~ "e",
+                                         item == "hard" ~ "A:",
+                                         item == "whod" ~ "u:",
+                                         item == "hood" ~ "U",
+                                         item == "hoard" ~ "O:",
+                                         item == "hud" ~ "V",
+                                         item == "hod" ~ "Q",
+                                         TRUE ~ "other"),
+                vowel = dplyr::case_when(item == "had" ~ "æ",
+                                         item == "heed" ~ "i",
+                                         item == "hid" ~ "ɪ",
+                                         item == "head" ~ "ɛ",
+                                         item == "hard" ~ "ɑ",
+                                         item == "whod" ~ "u",
+                                         item == "hood" ~ "ʊ",
+                                         item == "hoard" ~ "ɔ",
+                                         item == "hud" ~ "ʌ",
+                                         item == "hod" ~ "ɑ",
+                                         TRUE ~ "other"),
+                gender = dplyr::case_when(sex == "female" ~ "f",
+                                          TRUE ~ "m")) %>%
+  dplyr::filter(label != "other",
+                vowel != "other") %>%
+  dplyr::group_by(label, vowel, gender) %>%
+  dplyr::summarise(target_f1 = mean(F1_Hz),
+                   target_f2 = mean(F2_Hz),
+                   target_f3 = mean(F3_Hz)) %>%
+  dplyr::mutate(tvariety = "gb")
+# inspect data
+head(bre)
+```
+
+Combine reference and obs data
+
+```{r cref, message=F, warning=F}
+ref <- rbind(ame, bre)
+fdat <- dplyr::left_join(fdat, ref) %>%
+  dplyr::filter(!is.na(target_f1)) %>%
+  dplyr::mutate(edist = sqrt((F1-target_f1)^2 + (F2-target_f2)^2))
+# inspect
+head(fdat)
+```
+
+
+Determine best fit
+
+
+```{r fit, message=F, warning=F}
+# check
+nrow(fdat)
+# check minimum distance
+fdat <- fdat %>%
+  dplyr::arrange(file, tmin, tvariety, tformants) %>%
+  dplyr::group_by(file, tmin) %>% 
+  dplyr::slice(which.min(edist))
+# inspect
+nrow(fdat); head(fdat)
+```
+
+
+
+remove non-target words (too many characters plus the)
+
+```{r}
+# reduce words
+fdat <- fdat %>%
+  dplyr::filter(nchar(word) < 9,
+                word != "the") %>%
+  # bark normalization
+  dplyr::mutate(barkF1 = normBark(F1),
+                barkF2 = normBark(F2)) %>%
+  # lobanov normalization
+  dplyr::ungroup() %>%
+  dplyr::mutate(fspeaker = paste0(type, speaker, collaspe = "")) %>%
+  dplyr::group_by(type, gender, tvariety) %>%
+  dplyr::mutate(lobF1 = scale(F1),
+                lobF2 = scale(F2)) %>%
+  # remove superfluous columns
+  dplyr::select(-path, -PTJ1..wds., -PTJ2..wds., -SMK1..wds., -SMK2..wds., -Self.Ev, 
+                -Grade.Degree, -Acad..Genre, -VST, -CEFR, -INTM, -INSM, -INTM.INSM, 
+                -INTM.INSM.1, -Primary, -Secondary, -College, -Inschool, -Outschool,
+                -Reading, -Writing, -NS, -Presentation, -EssayW, -nv,
+                -Yrs.of.Stay....Yrs., -Test, -Score, -ENS.Type,
+                -Major..Occupation)
+# inspect
+head(fdat)
+```
+
+
+
+# (Semi-)Manual cross-evaluation
+
+check for inconsistencies
+
+```{r}
+fdat %>%
+  dplyr::group_by(word, vowel) %>%
+  dplyr::summarise(freq = n()) %>%
+  ggplot(aes(y = word, x = vowel, fill = freq)) +
+  geom_tile() +
+  theme_bw()
+```
+
+
+
+exclude inconsistencies
+
+```{r}
+fdat <- fdat %>%
+  dplyr::mutate(word = stringr::str_remove_all(word, "\\W")) %>%
+  dplyr::mutate(remove = dplyr::case_when(word == "bias"  ~ "remove",
+                                          word == "bui"  ~ "remove",
+                                          word == "da"  ~ "remove",
+                                          word == "di"  ~ "remove",
+                                          word == "de"  ~ "remove",
+                                          word == "dis"  ~ "remove",
+                                          word == "due"  ~ "remove",
+                                          word == "duh"  ~ "remove",
+                                          word == "ha"  ~ "remove",
+                                          word == "hab"  ~ "remove",
+                                          word == "hes"  ~ "remove",
+                                          word == "heself"  ~ "remove",
+                                          word == "huh"  ~ "remove",
+                                          word == "indepth"  ~ "remove",
+                                          word == "pe"  ~ "remove",
+                                          word == "po"  ~ "remove",
+                                          word == "peo"  ~ "remove",
+                                          word == "stu"  ~ "remove",
+                                          word == "sub"  ~ "remove",
+                                          word == "shou"  ~ "remove",
+                                          word == "ta"  ~ "remove",
+                                          word == "theyre"  ~ "remove",
+                                          word == "they"  ~ "remove",
+                                          word == "uhhuh"  ~ "remove",
+                                          word == "ways"  ~ "remove",
+                                          word == "wed"  ~ "remove",
+                                          word == "were"  ~ "remove",
+                                          word == "weve"  ~ "remove",
+                                          word == "whi"  ~ "remove",
+                                          word == "whove"  ~ "remove",
+                                           
+                                          word == "books" & vowel == "ɪ" ~ "remove",
+                                          word == "bit" & vowel == "ɐ" ~ "remove",
+                                          word == "do" & vowel == "ɐ" ~ "remove",
+                                          word == "do" & vowel == "ɪ" ~ "remove",
+                                          word == "but" & vowel == "ɪ" ~ "remove",
+                                          word == "gas" & vowel == "ɪ" ~ "remove",
+                                          word == "get" & vowel == "ɪ" ~ "remove",
+                                          word == "gets" & vowel == "ɪ" ~ "remove",
+                                          word == "good" & vowel == "ɪ" ~ "remove",
+                                          word == "to" & vowel == "ɐ" ~ "remove",
+                                          word == "to" & vowel == "ɪ" ~ "remove",
+                                          word == "to" & vowel == "iː" ~ "remove",
+                                          word == "that" & vowel == "ɪ" ~ "remove",
+                                          word == "thats" & vowel == "ɪ" ~ "remove",
+                                          word == "too" & vowel == "ɐ" ~ "remove",
+                                          word == "too" & vowel == "ɪ" ~ "remove",
+                                          word == "too" & vowel == "iː" ~ "remove",
+                                          word == "two" & vowel == "ɐ" ~ "remove",
+                                          word == "two" & vowel == "ɪ" ~ "remove",
+                                          TRUE ~ "keep")) %>%
+  dplyr::filter(remove != "remove")
+table(fdat$vowel, fdat$word)
+```
+
+
+```{r}
+fdat %>%
+  dplyr::group_by(word, vowel) %>%
+  dplyr::summarise(freq = n()) %>%
+  ggplot(aes(y = word, x = vowel, fill = freq)) +
+  geom_tile() +
+  theme_bw()
+```
+
+## Check durations
+
+```{r}
+fdat <- fdat %>%
+  # duration
+  dplyr::mutate(duration = tmax - tmin)
+# inspect
+head(fdat)
+```
+
+plot durations
+
+
+```{r}
+fdat %>%
+  ggplot(aes(x = vowel, y = duration, fill = type)) +
+  geom_boxplot()
+```
+
+
+
+
+
+
+
+```{r}
+max_durs <- fdat %>%
+  dplyr::group_by(type, tvariety, vowel) %>%
+  dplyr::summarise(du_min = min(duration),
+                   du_max = max(duration),
+                   du_ave = mean(duration),
+                   du_med = median(duration),
+                   du_sd = sd(duration),
+                   du_2sd = sd(duration)*1.645) %>%
+  dplyr::mutate(cutoff_duration = du_ave + du_2sd) %>%
+  dplyr::select(type, tvariety, vowel, cutoff_duration)
+# inspect
+head(max_durs)
+```
+
+
+remove duration outliers
+
+```{r}
+fdat <- dplyr::left_join(fdat, max_durs) %>%
+  dplyr::filter(duration <= cutoff_duration,
+                ifelse(label != "A:", duration <= 0.4, duration <= 0.75))
+# inspect
+head(fdat); nrow(fdat)
+```
+
+
+
+
+```{r}
+dur_IiUu <-  fdat %>%
+  ggplot(aes(y = vowel, x = duration, fill = type)) +
+  geom_density_ridges(alpha = .5) +
+  theme_ridges() +
+  theme(legend.position = "top") +
+  scale_fill_manual(values = c("orange", "gray"))
+ggsave(here::here("images", "dur_IiUu.png"), height = 3,  width = 5, dpi = 320)
+dur_IiUu
+```
+
+
+```{r}
+fdat %>%
+  ggplot(aes(x = vowel, y = duration, fill = type)) +
+  geom_boxplot()
+```
+
+
+
+```{r}
+fdat %>%
+  dplyr::group_by(type, tvariety, vowel) %>%
+  dplyr::mutate(ldur = log(duration)) %>%
+  ggplot(aes(x = vowel, y = ldur, fill = type)) +
+  geom_boxplot() +
+  facet_grid(~tvariety)
+```
+
+
+# Remove outliers
+
+```{r}
+nrow(fdat)
+fdat <- fdat %>% 
+  dplyr::group_by(type, tvariety, label) %>%
+  dplyr::mutate(densF1 = sm.density(barkF1,eval.points=barkF1)$estimate,
+                densF2 = sm.density(barkF2,eval.points=barkF2)$estimate,
+                qnt1F1 = quantile(densF1, .5, na.rm = T),
+                qnt1F2 = quantile(densF2, .5, na.rm = T))
+# inspect
+nrow(fdat); head(fdat); summary(fdat$densF1)
+```
+
+```{r}
+fdat <- fdat %>%
+  # remove data point within the lowest 25 percent of densities among F1 and F2 values
+  # but when label = A: and tvariety is gb
+  dplyr::mutate(rmv = ifelse(label == "A:" & tvariety == "gb", "keep", "remove")) %>%
+  dplyr::rowwise() %>%
+  dplyr::filter(rmv == "keep" | densF1 > qnt1F1 | densF2 > qnt1F2) %>%
+  # remove superfluous columns
+  dplyr::select(-densF1, -densF2, -qnt1F1, -qnt1F2, -cutoff_duration, -rmv)
+# inspect
+head(fdat); nrow(fdat)
+```
+
+# Remove GB target
+
+```{r tvar}
+fdat <- fdat %>%
+  dplyr::filter(tvariety != "gb")
+```
+
+
+
+
+# Normalization
+
+See [here](https://marissabarlaz.github.io/portfolio/vowelnormalization/)
+
+Gender normalization
+
+```{r}
+# Using mean F3 of open vowels (vowels with F1>600) to approximate female F1&F2 to those of male
+tempvowel <- fdat %>% 
+  dplyr::filter(F1 > 600) %>% 
+  dplyr::group_by(gender) %>%
+  dplyr::mutate(meanF3 = mean(F3))
+# extract k: k = ratio of Female F3 to Male F3
+k <- max(tempvowel$meanF3) / min(tempvowel$meanF3)
+# perform normalization
+fdat <- fdat %>%
+  dplyr::mutate(barkF1 = phonR::normBark(F1),
+                barkF2 = phonR::normBark(F2)) %>%
+  dplyr::mutate(normF1 = dplyr::if_else(gender == "f", F1*k, F1),
+                normF2 = dplyr::if_else(gender == "f", F2*k, F2))
+```
+
+calculate distance from target vowel centroid for each token
+
+```{r}
+tcentroid <- fdat %>%
+  dplyr::filter(type == "ENS") %>%
+  dplyr::group_by(tvariety, vowel) %>%
+  dplyr::summarise(cF1 = median(barkF1),
+                   cF2 = median(barkF2))
+# inspect
+head(tcentroid)
+```
+
+combine
+
+```{r}
+fdat <- dplyr::left_join(fdat, tcentroid) %>%
+  # euclidean distance
+  dplyr::rowwise() %>%
+  dplyr::mutate(ED = sqrt((barkF1-cF1)^2 + (barkF2-cF2)^2)) %>%
+  # remove superfluous columns
+  dplyr::select(-remove)
+# inspect
+head(fdat)
+```
+
+# Gramm. Status of Word
+
+```{r}
+gram <- c("be", "but", "did", "do", "get", "gets", "got", "had", "has", "he", "his", 
+          "she", "that", "this", "too", "was", "we", "what", "who", "with")
+fdat <- fdat %>%
+  # gramm. category of word
+  dplyr::mutate(WordType = ifelse(word %in% gram, "grammatical", "lexical"))
+```
+
+
+remove superfluous variables
+
+```{r}
+fdat <- fdat %>%
+  dplyr::select(id, label, word, file, F1, F2, speaker, vowel, 
+                label, type, gender, Age, tvariety, edist, barkF1, 
+                barkF2, fspeaker, lobF1, lobF2, duration, normF1, 
+                normF2, cF1, cF2, ED, WordType, prof) %>%
+  # create new speaker column
+  dplyr::mutate(speaker = paste0(type, speaker))
+# inspect
+head(fdat)
+```
+
+
+
+
+## Save data
+
+```{r}
+# save
+base::saveRDS(fdat, file = here::here("data", "cleandat.rda"))
+```
+
+
+# Citation & Session Info
+
+Schweinberger, Martin. 2024. An acoustic analysis of vowel production by L1-Chinese learners of English. 
+
+
+```{r}
+sessionInfo()
+```
